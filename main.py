@@ -3,7 +3,7 @@ from datetime import datetime
 import uuid
 
 
-def main(page: ft.Page):
+async def main(page: ft.Page):
     client_id = str(uuid.uuid4())
 
     page.title = "Chat App"
@@ -19,6 +19,9 @@ def main(page: ft.Page):
     online_users = []
     room_messages = {"Geral": []}
     editing_message_id = None
+
+    pending_uploads = {}
+    current_picker = None
 
     chat = ft.ListView(
         expand=True,
@@ -74,10 +77,32 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE70,
     )
 
+    upload_status_text = ft.Text(
+        value="",
+        size=12,
+        color=ft.Colors.WHITE70,
+    )
+
+    def open_file_url(url: str):
+        page.launch_url(url, web_popup_window=True)
+
+    def get_file_icon(file_name: str):
+        lower = file_name.lower()
+        if lower.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+            return ft.Icons.IMAGE
+        if lower.endswith(".pdf"):
+            return ft.Icons.PICTURE_AS_PDF
+        if lower.endswith((".doc", ".docx")):
+            return ft.Icons.DESCRIPTION
+        if lower.endswith((".xls", ".xlsx", ".csv")):
+            return ft.Icons.TABLE_CHART
+        if lower.endswith((".zip", ".rar", ".7z")):
+            return ft.Icons.FOLDER_ZIP
+        return ft.Icons.ATTACH_FILE
+
     def message_exists(message_id):
         if not message_id:
             return False
-
         for messages in room_messages.values():
             for msg in messages:
                 if msg.get("id") == message_id:
@@ -93,7 +118,6 @@ def main(page: ft.Page):
 
     def add_message_locally(message_data):
         room = message_data.get("room", "Geral")
-
         if room not in room_messages:
             room_messages[room] = []
 
@@ -128,8 +152,9 @@ def main(page: ft.Page):
         msg = find_message_by_id(message_id)
         if not msg or msg.get("deleted"):
             return
-
         if msg.get("user") != username:
+            return
+        if msg.get("type") != "chat":
             return
 
         editing_message_id = message_id
@@ -140,7 +165,6 @@ def main(page: ft.Page):
 
     def cancel_edit():
         nonlocal editing_message_id
-
         editing_message_id = None
         message_input.value = ""
         message_input.hint_text = "Escreve uma mensagem..."
@@ -151,7 +175,6 @@ def main(page: ft.Page):
         msg = find_message_by_id(message_id)
         if not msg:
             return
-
         if msg.get("user") != username:
             return
 
@@ -183,6 +206,8 @@ def main(page: ft.Page):
         else:
             users.append(username)
 
+        msg["reactions"] = {k: list(v) for k, v in reactions.items()}
+
         render_current_room_messages()
         page.update()
 
@@ -190,7 +215,7 @@ def main(page: ft.Page):
             {
                 "type": "reaction_updated",
                 "id": message_id,
-                "reactions": reactions,
+                "reactions": {k: list(v) for k, v in msg["reactions"].items()},
                 "sender_session": client_id,
             }
         )
@@ -227,7 +252,6 @@ def main(page: ft.Page):
         available_emojis = ["👍", "❤️", "😂", "😮"]
 
         chips = []
-
         for emoji in available_emojis:
             count = len(reactions.get(emoji, []))
             label = f"{emoji} {count}" if count > 0 else emoji
@@ -246,11 +270,81 @@ def main(page: ft.Page):
                 )
             )
 
-        return ft.Row(
-            spacing=4,
-            wrap=True,
-            controls=chips,
-        )
+        return ft.Row(spacing=4, wrap=True, controls=chips)
+
+    def create_file_content(message_data):
+        file_name = message_data.get("file_name", "Ficheiro")
+        file_url = message_data.get("file_url", "")
+        file_size = message_data.get("file_size", 0)
+
+        size_text = ""
+        if isinstance(file_size, (int, float)) and file_size > 0:
+            if file_size >= 1024 * 1024:
+                size_text = f"{file_size / (1024 * 1024):.1f} MB"
+            elif file_size >= 1024:
+                size_text = f"{file_size / 1024:.1f} KB"
+            else:
+                size_text = f"{int(file_size)} B"
+
+        controls = [
+            ft.Row(
+                spacing=10,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                controls=[
+                    ft.Icon(get_file_icon(file_name), color=ft.Colors.WHITE, size=22),
+                    ft.Column(
+                        spacing=2,
+                        controls=[
+                            ft.Text(file_name, color=ft.Colors.WHITE, weight=ft.FontWeight.BOLD),
+                            ft.Text(
+                                size_text if size_text else "Ficheiro enviado",
+                                color=ft.Colors.WHITE70,
+                                size=11,
+                            ),
+                        ],
+                    ),
+                ],
+            )
+        ]
+
+        if file_url:
+            controls.append(
+                ft.Row(
+                    spacing=10,
+                    controls=[
+                        ft.TextButton(
+                            "Abrir ficheiro",
+                            on_click=lambda e, url=file_url: page.launch_url(
+                                url,
+                                web_popup_window=True,
+                            ),
+                        ),
+                        ft.TextButton(
+                            "Download",
+                            on_click=lambda e, url=file_url: page.launch_url(
+                                url,
+                                web_popup_window=True,
+                            ),
+                        ),
+                    ]
+                )
+            )
+
+        if file_name.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")) and file_url:
+            controls.append(
+                ft.Container(
+                    margin=ft.margin.only(top=6),
+                    content=ft.Image(
+                        src=file_url,
+                        width=220,
+                        height=160,
+                        fit="contain",
+                        border_radius=10,
+                    ),
+                )
+            )
+
+        return ft.Column(spacing=6, controls=controls)
 
     def create_message(message_data):
         sender = message_data.get("user", "Sistema")
@@ -269,8 +363,7 @@ def main(page: ft.Page):
         meta_text = sender
         if private and recipient:
             meta_text += f" → {recipient} (privada)"
-
-        if edited and not deleted:
+        if edited and not deleted and msg_type == "chat":
             meta_text += " · editada"
 
         bubble_color = "#1d4ed8" if sender == username else "#1e293b"
@@ -278,15 +371,8 @@ def main(page: ft.Page):
             bubble_color = "#334155"
 
         action_buttons = []
-        if msg_type == "chat" and not deleted and sender == username:
+        if msg_type in ["chat", "file"] and not deleted and sender == username:
             action_buttons = [
-                ft.IconButton(
-                    icon=ft.Icons.EDIT,
-                    tooltip="Editar",
-                    icon_size=16,
-                    icon_color=ft.Colors.WHITE70,
-                    on_click=lambda e, msg_id=message_id: start_edit_message(msg_id),
-                ),
                 ft.IconButton(
                     icon=ft.Icons.DELETE,
                     tooltip="Apagar",
@@ -296,24 +382,26 @@ def main(page: ft.Page):
                 ),
             ]
 
-        bottom_row_controls = []
+        if msg_type == "chat" and not deleted and sender == username:
+            action_buttons.insert(
+                0,
+                ft.IconButton(
+                    icon=ft.Icons.EDIT,
+                    tooltip="Editar",
+                    icon_size=16,
+                    icon_color=ft.Colors.WHITE70,
+                    on_click=lambda e, msg_id=message_id: start_edit_message(msg_id),
+                ),
+            )
 
-        if msg_type == "chat":
+        bottom_row_controls = []
+        if msg_type in ["chat", "file"] and not deleted:
             bottom_row_controls.append(
-                ft.Container(
-                    expand=True,
-                    content=build_reaction_bar(message_data),
-                )
+                ft.Container(expand=True, content=build_reaction_bar(message_data))
             )
 
         if action_buttons:
-            bottom_row_controls.append(
-                ft.Row(
-                    spacing=0,
-                    tight=True,
-                    controls=action_buttons,
-                )
-            )
+            bottom_row_controls.append(ft.Row(spacing=0, tight=True, controls=action_buttons))
 
         content_controls = [
             ft.Row(
@@ -322,15 +410,21 @@ def main(page: ft.Page):
                     ft.Text(meta_text, size=12, color=ft.Colors.WHITE70),
                     ft.Text(timestamp, size=11, color=ft.Colors.WHITE54),
                 ],
-            ),
-            ft.Text(
-                text,
-                size=15,
-                color=ft.Colors.WHITE if not deleted else ft.Colors.WHITE54,
-                italic=deleted,
-                selectable=True,
-            ),
+            )
         ]
+
+        if msg_type == "file" and not deleted:
+            content_controls.append(create_file_content(message_data))
+        else:
+            content_controls.append(
+                ft.Text(
+                    text,
+                    size=15,
+                    color=ft.Colors.WHITE if not deleted else ft.Colors.WHITE54,
+                    italic=deleted,
+                    selectable=True,
+                )
+            )
 
         if bottom_row_controls:
             content_controls.append(
@@ -345,26 +439,16 @@ def main(page: ft.Page):
             bgcolor=bubble_color,
             border_radius=14,
             padding=10,
-            content=ft.Column(
-                spacing=6,
-                tight=True,
-                controls=content_controls,
-            ),
+            content=ft.Column(spacing=6, tight=True, controls=content_controls),
         )
 
         return ft.Row(
             alignment=ft.MainAxisAlignment.END if sender == username else ft.MainAxisAlignment.START,
-            controls=[
-                ft.Container(
-                    width=430,
-                    content=message_card,
-                )
-            ],
+            controls=[ft.Container(width=430, content=message_card)],
         )
 
     def refresh_room_list():
         room_list.controls.clear()
-
         for room in rooms:
             selected = room == current_room
             room_button = ft.Container(
@@ -478,25 +562,15 @@ def main(page: ft.Page):
             apply_local_edit(message_id, new_text)
             return
 
-        if msg_type == "reaction_toggled":
+        if msg_type == "reaction_updated":
             message_id = message_data.get("id")
-            emoji = message_data.get("emoji")
-            reacting_user = message_data.get("user")
+            new_reactions = message_data.get("reactions", {})
 
             msg = find_message_by_id(message_id)
             if not msg or msg.get("deleted"):
                 return
 
-            reactions = msg.setdefault("reactions", {})
-            users = reactions.setdefault(emoji, [])
-
-            if reacting_user in users:
-                users.remove(reacting_user)
-                if not users:
-                    del reactions[emoji]
-            else:
-                users.append(reacting_user)
-
+            msg["reactions"] = new_reactions
             render_current_room_messages()
             page.update()
             return
@@ -514,7 +588,7 @@ def main(page: ft.Page):
             page.update()
             return
 
-        if msg_type in ["system", "chat"]:
+        if msg_type in ["system", "chat", "file"]:
             msg_id = message_data.get("id")
             if msg_id and message_exists(msg_id):
                 return
@@ -598,6 +672,106 @@ def main(page: ft.Page):
         page.update()
 
         page.pubsub.send_all(new_message)
+
+    def on_file_upload(e: ft.FilePickerUploadEvent):
+        file_name = e.file_name
+
+        if e.error:
+            upload_status_text.value = f"Erro no upload de {file_name}: {e.error}"
+            page.update()
+            return
+
+        if e.progress is not None and e.progress < 1:
+            upload_status_text.value = f"A enviar {file_name}: {int(e.progress * 100)}%"
+            page.update()
+            return
+
+        info = pending_uploads.get(file_name)
+        if not info:
+            if not pending_uploads:
+                upload_status_text.value = ""
+                page.update()
+            return
+
+        file_message = {
+            "type": "file",
+            "id": str(uuid.uuid4()),
+            "user": username,
+            "room": info["room"],
+            "timestamp": datetime.now().strftime("%H:%M"),
+            "private": info["private"],
+            "recipient": info["recipient"],
+            "edited": False,
+            "deleted": False,
+            "reactions": {},
+            "file_name": info["original_name"],
+            "file_url": info["public_url"],
+            "file_size": info["size"],
+            "sender_session": client_id,
+        }
+
+        add_message_locally(file_message)
+
+        if current_room == file_message["room"]:
+            if not file_message["private"] or username in [file_message["user"], file_message["recipient"]]:
+                chat.controls.append(create_message(file_message))
+
+        page.pubsub.send_all(file_message)
+
+        pending_uploads.pop(file_name, None)
+        upload_status_text.value = "Upload concluído." if not pending_uploads else "A terminar uploads..."
+        page.update()
+
+    async def send_file(e):
+        nonlocal current_picker
+
+        if not username:
+            return
+
+        selected_recipient = recipient_dropdown.value or "Todos"
+        is_private = selected_recipient != "Todos"
+
+        current_picker = ft.FilePicker(on_upload=on_file_upload)
+
+        files = await current_picker.pick_files(
+            allow_multiple=True,
+            dialog_title="Escolher ficheiros",
+        )
+
+        if not files:
+            upload_status_text.value = ""
+            page.update()
+            return
+
+        pending_uploads.clear()
+        upload_list = []
+
+        for f in files:
+            safe_name = f"{uuid.uuid4()}_{f.name}"
+            relative_path = f"{client_id}/{safe_name}"
+            public_url = f"/uploads/{relative_path}"
+            upload_url = page.get_upload_url(relative_path, 600)
+
+            pending_uploads[f.name] = {
+                "original_name": f.name,
+                "public_url": public_url,
+                "room": current_room,
+                "private": is_private,
+                "recipient": selected_recipient if is_private else None,
+                "size": getattr(f, "size", 0),
+            }
+
+            upload_list.append(
+                ft.FilePickerUploadFile(
+                    name=f.name,
+                    upload_url=upload_url,
+                )
+            )
+
+        upload_status_text.value = "A enviar ficheiro(s)..."
+        page.update()
+
+        await current_picker.upload(upload_list)
 
     def join_chat(e):
         nonlocal username
@@ -737,13 +911,18 @@ def main(page: ft.Page):
         content=ft.Column(
             spacing=10,
             controls=[
-                ft.Row(
-                    controls=[recipient_dropdown]
-                ),
+                ft.Row(controls=[recipient_dropdown]),
+                upload_status_text,
                 ft.Row(
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         message_input,
+                        ft.IconButton(
+                            icon=ft.Icons.ATTACH_FILE,
+                            tooltip="Enviar ficheiro",
+                            icon_color=ft.Colors.WHITE,
+                            on_click=send_file,
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.CLOSE,
                             tooltip="Cancelar edição",
@@ -783,4 +962,9 @@ def main(page: ft.Page):
     page.add(login_view)
 
 
-ft.app(target=main, view=ft.AppView.WEB_BROWSER)
+ft.app(
+    target=main,
+    view=ft.AppView.WEB_BROWSER,
+    assets_dir="assets",
+    upload_dir="assets/uploads",
+)
