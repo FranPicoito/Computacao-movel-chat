@@ -34,8 +34,22 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE,
     )
 
-    def create_message(user, text):
-        time_now = datetime.now().strftime("%H:%M")
+    def create_message(user, text, timestamp=None, system=False):
+        time_now = timestamp if timestamp else datetime.now().strftime("%H:%M")
+
+        if system:
+            return ft.Row(
+                alignment=ft.MainAxisAlignment.CENTER,
+                controls=[
+                    ft.Text(
+                        f"[{time_now}] {text}",
+                        size=12,
+                        italic=True,
+                        color=ft.Colors.WHITE54,
+                    )
+                ],
+            )
+
         is_me = user == username
 
         return ft.Row(
@@ -65,12 +79,46 @@ def main(page: ft.Page):
             ],
         )
 
+    def on_message(message_data: dict):
+        msg_type = message_data.get("type")
+        timestamp = message_data.get("timestamp")
+
+        if msg_type == "system":
+            chat.controls.append(
+                create_message(
+                    user="",
+                    text=message_data.get("text", ""),
+                    timestamp=timestamp,
+                    system=True,
+                )
+            )
+        elif msg_type == "chat":
+            chat.controls.append(
+                create_message(
+                    user=message_data.get("user", "Unknown"),
+                    text=message_data.get("text", ""),
+                    timestamp=timestamp,
+                    system=False,
+                )
+            )
+
+        page.update()
+
     def send_message(e):
         if message_input.value.strip() == "":
             return
 
-        chat.controls.append(create_message(username, message_input.value.strip()))
+        page.pubsub.send_all(
+            {
+                "type": "chat",
+                "user": username,
+                "text": message_input.value.strip(),
+                "timestamp": datetime.now().strftime("%H:%M"),
+            }
+        )
+
         message_input.value = ""
+        message_input.focus()
         page.update()
 
     def join_chat(e):
@@ -87,8 +135,19 @@ def main(page: ft.Page):
         username = entered_name
         username_text.value = f"Olá, {username}"
 
+        page.pubsub.subscribe(on_message)
+
         page.controls.clear()
         page.add(chat_view)
+
+        page.pubsub.send_all(
+            {
+                "type": "system",
+                "text": f"{username} entrou no chat.",
+                "timestamp": datetime.now().strftime("%H:%M"),
+            }
+        )
+
         message_input.focus()
         page.update()
 
@@ -115,7 +174,11 @@ def main(page: ft.Page):
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
                 ft.Text("Chat em Tempo Real", size=28, weight=ft.FontWeight.BOLD),
-                ft.Text("Introduz o teu nome para entrar", size=14, color=ft.Colors.WHITE70),
+                ft.Text(
+                    "Introduz o teu nome para entrar",
+                    size=14,
+                    color=ft.Colors.WHITE70,
+                ),
                 name_input,
                 join_button,
             ],
@@ -128,7 +191,12 @@ def main(page: ft.Page):
         content=ft.Row(
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             controls=[
-                ft.Text("Flet Chat", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                ft.Text(
+                    "Flet Chat",
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.WHITE,
+                ),
                 username_text,
             ],
         ),
