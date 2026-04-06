@@ -1,5 +1,5 @@
 import flet as ft
-
+from datetime import datetime
 
 def main(page: ft.Page):
     page.title = "Chat App"
@@ -32,10 +32,30 @@ def main(page: ft.Page):
             return
 
         chat.controls.append(
-            ft.Text(f"{username}: {message_input.value}")
+            create_message(username, message_input.value)
         )
         message_input.value = ""
         page.update()
+
+    def create_message(user, text):
+        time_now = datetime.now().strftime("%H:%M")
+
+        return ft.Container(
+            padding=10,
+            border_radius=10,
+            bgcolor=ft.Colors.BLUE_GREY_800,
+            content=ft.Column(
+                spacing=2,
+                controls=[
+                    ft.Text(
+                        f"{user} · {time_now}",
+                        size=10,
+                        color=ft.Colors.WHITE54,
+                    ),
+                    ft.Text(text, size=14),
+                ],
+            ),
+        )
 
     def join_chat(e):
         nonlocal username
