@@ -4,19 +4,29 @@ from datetime import datetime
 
 def main(page: ft.Page):
     page.title = "Chat App"
-    page.window.width = 400
+    page.window.width = 900
     page.window.height = 700
     page.padding = 0
     page.theme_mode = ft.ThemeMode.DARK
     page.bgcolor = "#0f172a"
 
     username = ""
+    rooms = ["Geral"]
+    current_room = "Geral"
 
     chat = ft.ListView(
         expand=True,
         spacing=10,
         auto_scroll=True,
         padding=15,
+    )
+
+    room_list = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+    room_title = ft.Text(
+        value="Sala: Geral",
+        size=18,
+        weight=ft.FontWeight.BOLD,
+        color=ft.Colors.WHITE,
     )
 
     message_input = ft.TextField(
@@ -34,7 +44,13 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE,
     )
 
-    def create_message(user, text, timestamp=None, system=False):
+    new_room_input = ft.TextField(
+        hint_text="Nova sala...",
+        dense=True,
+        expand=True,
+    )
+
+    def create_message(user, text, room, timestamp=None, system=False):
         time_now = timestamp if timestamp else datetime.now().strftime("%H:%M")
 
         if system:
@@ -79,15 +95,57 @@ def main(page: ft.Page):
             ],
         )
 
+    def refresh_room_list():
+        room_list.controls.clear()
+
+        for room in rooms:
+            selected = room == current_room
+
+            room_button = ft.Container(
+                bgcolor="#2563eb" if selected else "#1e293b",
+                border_radius=10,
+                padding=10,
+                content=ft.Text(room, color=ft.Colors.WHITE),
+                on_click=lambda e, r=room: change_room(r),
+            )
+            room_list.controls.append(room_button)
+
+        page.update()
+
+    def change_room(room_name):
+        nonlocal current_room
+        current_room = room_name
+        room_title.value = f"Sala: {current_room}"
+        chat.controls.clear()
+        refresh_room_list()
+        page.update()
+
+    def add_room(e):
+        room_name = new_room_input.value.strip()
+
+        if room_name == "":
+            return
+
+        if room_name not in rooms:
+            rooms.append(room_name)
+
+        new_room_input.value = ""
+        refresh_room_list()
+
     def on_message(message_data: dict):
         msg_type = message_data.get("type")
         timestamp = message_data.get("timestamp")
+        room = message_data.get("room", "Geral")
+
+        if room != current_room:
+            return
 
         if msg_type == "system":
             chat.controls.append(
                 create_message(
                     user="",
                     text=message_data.get("text", ""),
+                    room=room,
                     timestamp=timestamp,
                     system=True,
                 )
@@ -97,6 +155,7 @@ def main(page: ft.Page):
                 create_message(
                     user=message_data.get("user", "Unknown"),
                     text=message_data.get("text", ""),
+                    room=room,
                     timestamp=timestamp,
                     system=False,
                 )
@@ -113,6 +172,7 @@ def main(page: ft.Page):
                 "type": "chat",
                 "user": username,
                 "text": message_input.value.strip(),
+                "room": current_room,
                 "timestamp": datetime.now().strftime("%H:%M"),
             }
         )
@@ -140,10 +200,13 @@ def main(page: ft.Page):
         page.controls.clear()
         page.add(chat_view)
 
+        refresh_room_list()
+
         page.pubsub.send_all(
             {
                 "type": "system",
-                "text": f"{username} entrou no chat.",
+                "text": f"{username} entrou na sala {current_room}.",
+                "room": current_room,
                 "timestamp": datetime.now().strftime("%H:%M"),
             }
         )
@@ -185,18 +248,36 @@ def main(page: ft.Page):
         ),
     )
 
+    sidebar = ft.Container(
+        width=220,
+        bgcolor="#111827",
+        padding=12,
+        content=ft.Column(
+            expand=True,
+            controls=[
+                ft.Text("Salas", size=20, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    controls=[
+                        new_room_input,
+                        ft.IconButton(
+                            icon=ft.Icons.ADD,
+                            on_click=add_room,
+                        ),
+                    ]
+                ),
+                ft.Divider(),
+                room_list,
+            ],
+        ),
+    )
+
     header = ft.Container(
         padding=ft.padding.symmetric(horizontal=16, vertical=14),
         bgcolor="#1e293b",
         content=ft.Row(
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             controls=[
-                ft.Text(
-                    "Flet Chat",
-                    size=20,
-                    weight=ft.FontWeight.BOLD,
-                    color=ft.Colors.WHITE,
-                ),
+                room_title,
                 username_text,
             ],
         ),
@@ -218,16 +299,22 @@ def main(page: ft.Page):
         ),
     )
 
-    chat_view = ft.Column(
+    chat_area = ft.Column(
         expand=True,
         spacing=0,
         controls=[
             header,
-            ft.Container(
-                expand=True,
-                content=chat,
-            ),
+            ft.Container(expand=True, content=chat),
             input_bar,
+        ],
+    )
+
+    chat_view = ft.Row(
+        expand=True,
+        spacing=0,
+        controls=[
+            sidebar,
+            chat_area,
         ],
     )
 
