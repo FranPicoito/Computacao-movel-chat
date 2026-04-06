@@ -14,6 +14,7 @@ def main(page: ft.Page):
     rooms = ["Geral"]
     current_room = "Geral"
     online_users = []
+    room_messages = {"Geral": []}
 
     chat = ft.ListView(
         expand=True,
@@ -171,18 +172,59 @@ def main(page: ft.Page):
             )
             room_list.controls.append(room_button)
 
+        
+    def render_current_room_messages():
+        chat.controls.clear()
+
+        for message_data in room_messages.get(current_room, []):
+            msg_type = message_data.get("type")
+            timestamp = message_data.get("timestamp")
+            room = message_data.get("room", "Geral")
+            private = message_data.get("private", False)
+            sender = message_data.get("user", "Unknown")
+            recipient = message_data.get("recipient")
+
+            if private and username not in [sender, recipient]:
+                continue
+
+            if msg_type == "system":
+                chat.controls.append(
+                    create_message(
+                        user="",
+                        text=message_data.get("text", ""),
+                        room=room,
+                        timestamp=timestamp,
+                        system=True,
+                    )
+                )
+            elif msg_type == "chat":
+                chat.controls.append(
+                    create_message(
+                        user=sender,
+                        text=message_data.get("text", ""),
+                        room=room,
+                        timestamp=timestamp,
+                        system=False,
+                        private=private,
+                        recipient=recipient,
+                    )
+                )
+
     def change_room(room_name):
         nonlocal current_room
         current_room = room_name
         room_title.value = f"Sala: {current_room}"
-        chat.controls.clear()
         refresh_room_list()
+        render_current_room_messages()
         page.update()
 
     def add_room(e):
         room_name = new_room_input.value.strip()
         if not room_name:
             return
+
+        if room_name not in room_messages:
+            room_messages[room_name] = []
 
         page.pubsub.send_all(
             {
@@ -203,6 +245,7 @@ def main(page: ft.Page):
 
             if room_name and room_name not in rooms:
                 rooms.append(room_name)
+                room_messages[room_name] = []
                 refresh_room_list()
                 page.update()
             return
@@ -212,7 +255,6 @@ def main(page: ft.Page):
             if joined_user:
                 add_online_user(joined_user)
 
-                # responder ao utilizador novo com a nossa presença
                 if username and joined_user != username:
                     page.pubsub.send_all(
                         {
@@ -239,6 +281,12 @@ def main(page: ft.Page):
         private = message_data.get("private", False)
         sender = message_data.get("user", "Unknown")
         recipient = message_data.get("recipient")
+
+        if room not in room_messages:
+            room_messages[room] = []
+
+        if msg_type in ["system", "chat"]:
+            room_messages[room].append(message_data)
 
         if room != current_room:
             return
