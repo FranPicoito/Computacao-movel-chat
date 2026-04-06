@@ -4,6 +4,8 @@ import uuid
 
 
 def main(page: ft.Page):
+    client_id = str(uuid.uuid4())
+
     page.title = "Chat App"
     page.window.width = 950
     page.window.height = 700
@@ -25,7 +27,10 @@ def main(page: ft.Page):
         padding=15,
     )
 
-    room_list = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+    room_list = ft.Column(
+        spacing=8,
+        scroll=ft.ScrollMode.AUTO,
+    )
 
     room_title = ft.Text(
         value="Sala: Geral",
@@ -53,6 +58,7 @@ def main(page: ft.Page):
         hint_text="Nova sala...",
         dense=True,
         expand=True,
+        on_submit=lambda e: add_room(e),
     )
 
     recipient_dropdown = ft.Dropdown(
@@ -68,12 +74,34 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE70,
     )
 
+    def message_exists(message_id):
+        if not message_id:
+            return False
+
+        for messages in room_messages.values():
+            for msg in messages:
+                if msg.get("id") == message_id:
+                    return True
+        return False
+
     def find_message_by_id(message_id):
         for _, messages in room_messages.items():
             for msg in messages:
                 if msg.get("id") == message_id:
                     return msg
         return None
+
+    def add_message_locally(message_data):
+        room = message_data.get("room", "Geral")
+
+        if room not in room_messages:
+            room_messages[room] = []
+
+        msg_id = message_data.get("id")
+        if msg_id and message_exists(msg_id):
+            return
+
+        room_messages[room].append(message_data)
 
     def apply_local_edit(message_id, new_text):
         updated = False
@@ -101,12 +129,14 @@ def main(page: ft.Page):
         if not msg or msg.get("deleted"):
             return
 
+        if msg.get("user") != username:
+            return
+
         editing_message_id = message_id
         message_input.value = msg.get("text", "")
         message_input.hint_text = "Editar mensagem..."
         message_input.focus()
         page.update()
-
 
     def cancel_edit():
         nonlocal editing_message_id
@@ -114,6 +144,7 @@ def main(page: ft.Page):
         editing_message_id = None
         message_input.value = ""
         message_input.hint_text = "Escreve uma mensagem..."
+        message_input.focus()
         page.update()
 
     def delete_message(message_id):
@@ -121,11 +152,46 @@ def main(page: ft.Page):
         if not msg:
             return
 
+        if msg.get("user") != username:
+            return
+
+        msg["deleted"] = True
+        render_current_room_messages()
+        page.update()
+
         page.pubsub.send_all(
             {
                 "type": "message_deleted",
                 "id": message_id,
                 "room": msg.get("room"),
+                "sender_session": client_id,
+            }
+        )
+
+    def toggle_reaction(message_id, emoji):
+        msg = find_message_by_id(message_id)
+        if not msg or msg.get("deleted"):
+            return
+
+        reactions = msg.setdefault("reactions", {})
+        users = reactions.setdefault(emoji, [])
+
+        if username in users:
+            users.remove(username)
+            if not users:
+                del reactions[emoji]
+        else:
+            users.append(username)
+
+        render_current_room_messages()
+        page.update()
+
+        page.pubsub.send_all(
+            {
+                "type": "reaction_updated",
+                "id": message_id,
+                "reactions": reactions,
+                "sender_session": client_id,
             }
         )
 
@@ -155,106 +221,143 @@ def main(page: ft.Page):
         refresh_online_users_text()
         page.update()
 
+    def build_reaction_bar(message_data):
+        message_id = message_data.get("id")
+        reactions = message_data.get("reactions", {})
+        available_emojis = ["👍", "❤️", "😂", "😮"]
+
+        chips = []
+
+        for emoji in available_emojis:
+            count = len(reactions.get(emoji, []))
+            label = f"{emoji} {count}" if count > 0 else emoji
+
+            chips.append(
+                ft.OutlinedButton(
+                    content=ft.Text(label, size=13, color=ft.Colors.WHITE),
+                    height=28,
+                    width=58,
+                    style=ft.ButtonStyle(
+                        padding=ft.Padding(0, 0, 0, 0),
+                        side={ft.ControlState.DEFAULT: ft.BorderSide(1, ft.Colors.WHITE24)},
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    on_click=lambda e, em=emoji, msg_id=message_id: toggle_reaction(msg_id, em),
+                )
+            )
+
+        return ft.Row(
+            spacing=4,
+            wrap=True,
+            controls=chips,
+        )
+
     def create_message(message_data):
-        user = message_data.get("user", "")
+        sender = message_data.get("user", "Sistema")
         text = message_data.get("text", "")
-        timestamp = message_data.get("timestamp", datetime.now().strftime("%H:%M"))
-        system = message_data.get("type") == "system"
+        timestamp = message_data.get("timestamp", "")
         private = message_data.get("private", False)
         recipient = message_data.get("recipient")
         edited = message_data.get("edited", False)
         deleted = message_data.get("deleted", False)
         message_id = message_data.get("id")
+        msg_type = message_data.get("type", "chat")
 
-        if system:
-            return ft.Row(
-                alignment=ft.MainAxisAlignment.CENTER,
-                controls=[
-                    ft.Text(
-                        f"[{timestamp}] {text}",
-                        size=12,
-                        italic=True,
-                        color=ft.Colors.WHITE54,
-                    )
-                ],
-            )
+        if deleted:
+            text = "Mensagem apagada"
 
-        is_me = user == username
-        display_text = "Mensagem apagada" if deleted else text
+        meta_text = sender
+        if private and recipient:
+            meta_text += f" → {recipient} (privada)"
 
-        privacy_label = ""
-        if private:
-            privacy_label = f"Privada para {recipient}" if is_me else f"Privada de {user}"
-
-        meta_label = f"{user} · {timestamp}"
         if edited and not deleted:
-            meta_label += " · editada"
+            meta_text += " · editada"
 
-        controls_column = [
-            ft.Text(
-                meta_label,
-                size=10,
-                color="#cbd5e1",
-            ),
-            ft.Text(
-                display_text,
-                size=14,
-                color=ft.Colors.WHITE54 if deleted else ft.Colors.WHITE,
-                italic=deleted,
-            ),
-        ]
-
-        if private:
-            controls_column.append(
-                ft.Text(
-                    privacy_label,
-                    size=10,
-                    italic=True,
-                    color="#e2e8f0",
-                )
-            )
+        bubble_color = "#1d4ed8" if sender == username else "#1e293b"
+        if msg_type == "system":
+            bubble_color = "#334155"
 
         action_buttons = []
-        if is_me and not system and not deleted:
+        if msg_type == "chat" and not deleted and sender == username:
             action_buttons = [
                 ft.IconButton(
                     icon=ft.Icons.EDIT,
+                    tooltip="Editar",
                     icon_size=16,
-                    tooltip="Editar mensagem",
+                    icon_color=ft.Colors.WHITE70,
                     on_click=lambda e, msg_id=message_id: start_edit_message(msg_id),
                 ),
                 ft.IconButton(
                     icon=ft.Icons.DELETE,
+                    tooltip="Apagar",
                     icon_size=16,
-                    tooltip="Apagar mensagem",
+                    icon_color=ft.Colors.WHITE70,
                     on_click=lambda e, msg_id=message_id: delete_message(msg_id),
                 ),
             ]
 
+        bottom_row_controls = []
+
+        if msg_type == "chat":
+            bottom_row_controls.append(
+                ft.Container(
+                    expand=True,
+                    content=build_reaction_bar(message_data),
+                )
+            )
+
+        if action_buttons:
+            bottom_row_controls.append(
+                ft.Row(
+                    spacing=0,
+                    tight=True,
+                    controls=action_buttons,
+                )
+            )
+
+        content_controls = [
+            ft.Row(
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                controls=[
+                    ft.Text(meta_text, size=12, color=ft.Colors.WHITE70),
+                    ft.Text(timestamp, size=11, color=ft.Colors.WHITE54),
+                ],
+            ),
+            ft.Text(
+                text,
+                size=15,
+                color=ft.Colors.WHITE if not deleted else ft.Colors.WHITE54,
+                italic=deleted,
+                selectable=True,
+            ),
+        ]
+
+        if bottom_row_controls:
+            content_controls.append(
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=bottom_row_controls,
+                )
+            )
+
+        message_card = ft.Container(
+            bgcolor=bubble_color,
+            border_radius=14,
+            padding=10,
+            content=ft.Column(
+                spacing=6,
+                tight=True,
+                controls=content_controls,
+            ),
+        )
+
         return ft.Row(
-            alignment=ft.MainAxisAlignment.END if is_me else ft.MainAxisAlignment.START,
+            alignment=ft.MainAxisAlignment.END if sender == username else ft.MainAxisAlignment.START,
             controls=[
                 ft.Container(
-                    padding=12,
-                    border_radius=12,
-                    bgcolor="#7c3aed" if private else ("#2563eb" if is_me else "#1e293b"),
-                    content=ft.Column(
-                        tight=True,
-                        spacing=4,
-                        controls=[
-                            ft.Row(
-                                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                                controls=[
-                                    ft.Column(
-                                        tight=True,
-                                        spacing=4,
-                                        controls=controls_column,
-                                    ),
-                                    ft.Row(controls=action_buttons) if action_buttons else ft.Container(),
-                                ],
-                            )
-                        ],
-                    ),
+                    width=430,
+                    content=message_card,
                 )
             ],
         )
@@ -286,6 +389,8 @@ def main(page: ft.Page):
 
             chat.controls.append(create_message(message_data))
 
+        page.update()
+
     def change_room(room_name):
         nonlocal current_room
         current_room = room_name
@@ -299,14 +404,21 @@ def main(page: ft.Page):
         if not room_name:
             return
 
+        if room_name not in rooms:
+            rooms.append(room_name)
+
         if room_name not in room_messages:
             room_messages[room_name] = []
+
+        refresh_room_list()
+        page.update()
 
         page.pubsub.send_all(
             {
                 "type": "room_created",
                 "room_name": room_name,
                 "created_by": username,
+                "sender_session": client_id,
             }
         )
 
@@ -315,15 +427,22 @@ def main(page: ft.Page):
 
     def on_message(message_data: dict):
         msg_type = message_data.get("type")
+        sender_session = message_data.get("sender_session")
+
+        if sender_session == client_id:
+            return
 
         if msg_type == "room_created":
             room_name = message_data.get("room_name", "").strip()
 
             if room_name and room_name not in rooms:
                 rooms.append(room_name)
+
+            if room_name and room_name not in room_messages:
                 room_messages[room_name] = []
-                refresh_room_list()
-                page.update()
+
+            refresh_room_list()
+            page.update()
             return
 
         if msg_type == "presence":
@@ -337,6 +456,7 @@ def main(page: ft.Page):
                             "type": "presence_ack",
                             "user": username,
                             "target": joined_user,
+                            "sender_session": client_id,
                         }
                     )
 
@@ -355,12 +475,30 @@ def main(page: ft.Page):
         if msg_type == "message_edited":
             message_id = message_data.get("id")
             new_text = message_data.get("text", "").strip()
-            editor = message_data.get("editor")
+            apply_local_edit(message_id, new_text)
+            return
 
-            if editor == username:
+        if msg_type == "reaction_toggled":
+            message_id = message_data.get("id")
+            emoji = message_data.get("emoji")
+            reacting_user = message_data.get("user")
+
+            msg = find_message_by_id(message_id)
+            if not msg or msg.get("deleted"):
                 return
 
-            apply_local_edit(message_id, new_text)
+            reactions = msg.setdefault("reactions", {})
+            users = reactions.setdefault(emoji, [])
+
+            if reacting_user in users:
+                users.remove(reacting_user)
+                if not users:
+                    del reactions[emoji]
+            else:
+                users.append(reacting_user)
+
+            render_current_room_messages()
+            page.update()
             return
 
         if msg_type == "message_deleted":
@@ -376,27 +514,29 @@ def main(page: ft.Page):
             page.update()
             return
 
-        room = message_data.get("room", "Geral")
-        private = message_data.get("private", False)
-        sender = message_data.get("user", "Unknown")
-        recipient = message_data.get("recipient")
-
-        if room not in room_messages:
-            room_messages[room] = []
-
         if msg_type in ["system", "chat"]:
+            msg_id = message_data.get("id")
+            if msg_id and message_exists(msg_id):
+                return
+
+            room = message_data.get("room", "Geral")
+            private = message_data.get("private", False)
+            sender = message_data.get("user", "Unknown")
+            recipient = message_data.get("recipient")
+
+            if room not in room_messages:
+                room_messages[room] = []
+
             room_messages[room].append(message_data)
 
-        if room != current_room:
-            return
+            if room != current_room:
+                return
 
-        if private and username not in [sender, recipient]:
-            return
+            if private and username not in [sender, recipient]:
+                return
 
-        if msg_type in ["system", "chat"]:
             chat.controls.append(create_message(message_data))
-
-        page.update()
+            page.update()
 
     def send_message(e):
         nonlocal editing_message_id
@@ -405,7 +545,6 @@ def main(page: ft.Page):
         if not text or not username:
             return
 
-        # modo edição
         if editing_message_id is not None:
             apply_local_edit(editing_message_id, text)
 
@@ -419,6 +558,7 @@ def main(page: ft.Page):
                         "room": msg.get("room"),
                         "edited": True,
                         "editor": username,
+                        "sender_session": client_id,
                     }
                 )
 
@@ -429,28 +569,35 @@ def main(page: ft.Page):
             page.update()
             return
 
-        # modo mensagem nova
         selected_recipient = recipient_dropdown.value or "Todos"
         is_private = selected_recipient != "Todos"
 
-        page.pubsub.send_all(
-            {
-                "type": "chat",
-                "id": str(uuid.uuid4()),
-                "user": username,
-                "text": text,
-                "room": current_room,
-                "timestamp": datetime.now().strftime("%H:%M"),
-                "private": is_private,
-                "recipient": selected_recipient if is_private else None,
-                "edited": False,
-                "deleted": False,
-            }
-        )
+        new_message = {
+            "type": "chat",
+            "id": str(uuid.uuid4()),
+            "user": username,
+            "text": text,
+            "room": current_room,
+            "timestamp": datetime.now().strftime("%H:%M"),
+            "private": is_private,
+            "recipient": selected_recipient if is_private else None,
+            "edited": False,
+            "deleted": False,
+            "reactions": {},
+            "sender_session": client_id,
+        }
+
+        add_message_locally(new_message)
+
+        if current_room == new_message["room"]:
+            if not new_message["private"] or username in [new_message["user"], new_message["recipient"]]:
+                chat.controls.append(create_message(new_message))
 
         message_input.value = ""
         message_input.focus()
         page.update()
+
+        page.pubsub.send_all(new_message)
 
     def join_chat(e):
         nonlocal username
@@ -474,22 +621,31 @@ def main(page: ft.Page):
 
         refresh_room_list()
         refresh_presence_ui()
+        render_current_room_messages()
 
         page.pubsub.send_all(
             {
                 "type": "presence",
                 "user": username,
+                "sender_session": client_id,
             }
         )
 
-        page.pubsub.send_all(
-            {
-                "type": "system",
-                "text": f"{username} entrou na sala {current_room}.",
-                "room": current_room,
-                "timestamp": datetime.now().strftime("%H:%M"),
-            }
-        )
+        system_message = {
+            "type": "system",
+            "id": str(uuid.uuid4()),
+            "user": "Sistema",
+            "text": f"{username} entrou na sala {current_room}.",
+            "room": current_room,
+            "timestamp": datetime.now().strftime("%H:%M"),
+            "sender_session": client_id,
+        }
+
+        add_message_locally(system_message)
+        if current_room == system_message["room"]:
+            chat.controls.append(create_message(system_message))
+
+        page.pubsub.send_all(system_message)
 
         message_input.focus()
         page.update()
@@ -516,7 +672,12 @@ def main(page: ft.Page):
             alignment=ft.MainAxisAlignment.CENTER,
             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             controls=[
-                ft.Text("Chat em Tempo Real", size=28, weight=ft.FontWeight.BOLD),
+                ft.Text(
+                    "Chat em Tempo Real",
+                    size=28,
+                    weight=ft.FontWeight.BOLD,
+                    color=ft.Colors.WHITE,
+                ),
                 ft.Text(
                     "Introduz o teu nome para entrar",
                     size=14,
@@ -535,13 +696,14 @@ def main(page: ft.Page):
         content=ft.Column(
             expand=True,
             controls=[
-                ft.Text("Salas", size=20, weight=ft.FontWeight.BOLD),
+                ft.Text("Salas", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
                 ft.Row(
                     controls=[
                         new_room_input,
                         ft.IconButton(
                             icon=ft.Icons.ADD,
                             on_click=add_room,
+                            icon_color=ft.Colors.WHITE,
                         ),
                     ]
                 ),
