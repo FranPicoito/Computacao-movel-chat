@@ -184,15 +184,28 @@ def main(page: ft.Page):
         if not room_name:
             return
 
-        if room_name not in rooms:
-            rooms.append(room_name)
+        page.pubsub.send_all(
+            {
+                "type": "room_created",
+                "room_name": room_name,
+                "created_by": username,
+            }
+        )
 
         new_room_input.value = ""
-        refresh_room_list()
         page.update()
 
     def on_message(message_data: dict):
         msg_type = message_data.get("type")
+
+        if msg_type == "room_created":
+            room_name = message_data.get("room_name", "").strip()
+
+            if room_name and room_name not in rooms:
+                rooms.append(room_name)
+                refresh_room_list()
+                page.update()
+            return
 
         if msg_type == "presence":
             joined_user = message_data.get("user", "").strip()
