@@ -16,6 +16,7 @@ def main(page: ft.Page):
     current_room = "Geral"
     online_users = []
     room_messages = {"Geral": []}
+    editing_message_id = None
 
     chat = ft.ListView(
         expand=True,
@@ -68,56 +69,52 @@ def main(page: ft.Page):
     )
 
     def find_message_by_id(message_id):
-        for room_name, messages in room_messages.items():
+        for _, messages in room_messages.items():
             for msg in messages:
                 if msg.get("id") == message_id:
                     return msg
         return None
 
+    def apply_local_edit(message_id, new_text):
+        updated = False
 
-    def open_edit_dialog(message_id):
+        for messages in room_messages.values():
+            for msg in messages:
+                if msg.get("id") == message_id:
+                    msg["text"] = new_text
+                    msg["edited"] = True
+                    updated = True
+                    break
+            if updated:
+                break
+
+        if updated:
+            render_current_room_messages()
+            page.update()
+
+        return updated
+
+    def start_edit_message(message_id):
+        nonlocal editing_message_id
+
         msg = find_message_by_id(message_id)
         if not msg or msg.get("deleted"):
             return
 
-        edit_input = ft.TextField(value=msg.get("text", ""), autofocus=True)
-
-        def confirm_edit(e):
-            new_text = edit_input.value.strip()
-            if not new_text:
-                return
-
-            page.pubsub.send_all(
-                {
-                    "type": "message_edited",
-                    "id": message_id,
-                    "text": new_text,
-                    "room": msg.get("room"),
-                    "edited": True,
-                }
-            )
-
-            page.dialog.open = False
-            page.update()
-
-        page.dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Editar mensagem"),
-            content=edit_input,
-            actions=[
-                ft.TextButton("Cancelar", on_click=lambda e: close_dialog()),
-                ft.ElevatedButton("Guardar", on_click=confirm_edit),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-        page.dialog.open = True
+        editing_message_id = message_id
+        message_input.value = msg.get("text", "")
+        message_input.hint_text = "Editar mensagem..."
+        message_input.focus()
         page.update()
 
 
-    def close_dialog():
-        page.dialog.open = False
-        page.update()
+    def cancel_edit():
+        nonlocal editing_message_id
 
+        editing_message_id = None
+        message_input.value = ""
+        message_input.hint_text = "Escreve uma mensagem..."
+        page.update()
 
     def delete_message(message_id):
         msg = find_message_by_id(message_id)
@@ -131,7 +128,7 @@ def main(page: ft.Page):
                 "room": msg.get("room"),
             }
         )
-    
+
     def add_online_user(user):
         if user and user not in online_users:
             online_users.append(user)
@@ -161,7 +158,6 @@ def main(page: ft.Page):
     def create_message(message_data):
         user = message_data.get("user", "")
         text = message_data.get("text", "")
-        room = message_data.get("room", "Geral")
         timestamp = message_data.get("timestamp", datetime.now().strftime("%H:%M"))
         system = message_data.get("type") == "system"
         private = message_data.get("private", False)
@@ -184,11 +180,7 @@ def main(page: ft.Page):
             )
 
         is_me = user == username
-
-        if deleted:
-            display_text = "Mensagem apagada"
-        else:
-            display_text = text
+        display_text = "Mensagem apagada" if deleted else text
 
         privacy_label = ""
         if private:
@@ -229,7 +221,7 @@ def main(page: ft.Page):
                     icon=ft.Icons.EDIT,
                     icon_size=16,
                     tooltip="Editar mensagem",
-                    on_click=lambda e, msg_id=message_id: open_edit_dialog(msg_id),
+                    on_click=lambda e, msg_id=message_id: start_edit_message(msg_id),
                 ),
                 ft.IconButton(
                     icon=ft.Icons.DELETE,
@@ -281,7 +273,6 @@ def main(page: ft.Page):
             )
             room_list.controls.append(room_button)
 
-        
     def render_current_room_messages():
         chat.controls.clear()
 
@@ -364,16 +355,12 @@ def main(page: ft.Page):
         if msg_type == "message_edited":
             message_id = message_data.get("id")
             new_text = message_data.get("text", "").strip()
+            editor = message_data.get("editor")
 
-            for messages in room_messages.values():
-                for msg in messages:
-                    if msg.get("id") == message_id:
-                        msg["text"] = new_text
-                        msg["edited"] = True
-                        break
+            if editor == username:
+                return
 
-            render_current_room_messages()
-            page.update()
+            apply_local_edit(message_id, new_text)
             return
 
         if msg_type == "message_deleted":
@@ -389,7 +376,6 @@ def main(page: ft.Page):
             page.update()
             return
 
-        timestamp = message_data.get("timestamp")
         room = message_data.get("room", "Geral")
         private = message_data.get("private", False)
         sender = message_data.get("user", "Unknown")
@@ -413,10 +399,37 @@ def main(page: ft.Page):
         page.update()
 
     def send_message(e):
+        nonlocal editing_message_id
+
         text = message_input.value.strip()
         if not text or not username:
             return
 
+        # modo edição
+        if editing_message_id is not None:
+            apply_local_edit(editing_message_id, text)
+
+            msg = find_message_by_id(editing_message_id)
+            if msg:
+                page.pubsub.send_all(
+                    {
+                        "type": "message_edited",
+                        "id": editing_message_id,
+                        "text": text,
+                        "room": msg.get("room"),
+                        "edited": True,
+                        "editor": username,
+                    }
+                )
+
+            editing_message_id = None
+            message_input.value = ""
+            message_input.hint_text = "Escreve uma mensagem..."
+            message_input.focus()
+            page.update()
+            return
+
+        # modo mensagem nova
         selected_recipient = recipient_dropdown.value or "Todos"
         is_private = selected_recipient != "Todos"
 
@@ -462,7 +475,6 @@ def main(page: ft.Page):
         refresh_room_list()
         refresh_presence_ui()
 
-        # anuncia que entrou
         page.pubsub.send_all(
             {
                 "type": "presence",
@@ -570,6 +582,12 @@ def main(page: ft.Page):
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
                         message_input,
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            tooltip="Cancelar edição",
+                            icon_color=ft.Colors.RED_200,
+                            on_click=lambda e: cancel_edit(),
+                        ),
                         ft.IconButton(
                             icon=ft.Icons.SEND,
                             icon_color=ft.Colors.BLUE_200,
