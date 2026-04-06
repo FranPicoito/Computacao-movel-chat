@@ -25,6 +25,9 @@ async def main(page: ft.Page):
     pending_uploads = {}
     current_picker = None
 
+    sidebar_open = False
+    MOBILE_BREAKPOINT = 768
+
     chat = ft.ListView(
         expand=True,
         spacing=10,
@@ -85,6 +88,48 @@ async def main(page: ft.Page):
         color=ft.Colors.WHITE70,
     )
 
+    def is_mobile():
+        return (page.width or 0) < MOBILE_BREAKPOINT
+
+    def open_sidebar(e=None):
+        nonlocal sidebar_open
+        if is_mobile():
+            sidebar_open = True
+            update_layout()
+
+    def close_sidebar(e=None):
+        nonlocal sidebar_open
+        sidebar_open = False
+        update_layout()
+
+    def update_layout():
+        mobile = is_mobile()
+
+        menu_button.visible = mobile
+        sidebar_close_button.visible = mobile
+
+        desktop_sidebar.visible = not mobile
+
+        mobile_sidebar.visible = mobile and sidebar_open
+        sidebar_overlay.visible = mobile and sidebar_open
+
+        if mobile:
+            username_text.size = 13
+            recipient_dropdown.width = page.width - 40 if page.width and page.width < 500 else 220
+        else:
+            username_text.size = 16
+            recipient_dropdown.width = 220
+
+        page.update()
+
+    def on_page_resize(e):
+        nonlocal sidebar_open
+        if not is_mobile():
+            sidebar_open = False
+        update_layout()
+
+    page.on_resized = on_page_resize
+
     def open_file_url(url: str):
         page.launch_url(url, web_popup_window=True)
 
@@ -100,7 +145,7 @@ async def main(page: ft.Page):
             return ft.Icons.TABLE_CHART
         if lower.endswith((".zip", ".rar", ".7z")):
             return ft.Icons.FOLDER_ZIP
-        return ft.Icons.ATTACH_FILE  
+        return ft.Icons.ATTACH_FILE
 
     def on_search_change(e):
         nonlocal search_query
@@ -334,6 +379,7 @@ async def main(page: ft.Page):
             controls.append(
                 ft.Row(
                     spacing=10,
+                    wrap=True,
                     controls=[
                         ft.TextButton(
                             "Abrir ficheiro",
@@ -458,6 +504,13 @@ async def main(page: ft.Page):
                 )
             )
 
+        max_bubble_width = 430
+        if page.width:
+            if is_mobile():
+                max_bubble_width = max(220, page.width - 40)
+            else:
+                max_bubble_width = min(430, max(280, int(page.width * 0.5)))
+
         message_card = ft.Container(
             bgcolor=bubble_color,
             border_radius=14,
@@ -467,7 +520,7 @@ async def main(page: ft.Page):
 
         return ft.Row(
             alignment=ft.MainAxisAlignment.END if sender == username else ft.MainAxisAlignment.START,
-            controls=[ft.Container(width=430, content=message_card)],
+            controls=[ft.Container(width=max_bubble_width, content=message_card)],
         )
 
     def refresh_room_list():
@@ -541,6 +594,10 @@ async def main(page: ft.Page):
         room_title.value = f"Sala: {current_room}"
         refresh_room_list()
         render_current_room_messages()
+
+        if is_mobile():
+            close_sidebar()
+
         page.update()
 
     def add_room(e):
@@ -868,6 +925,7 @@ async def main(page: ft.Page):
         refresh_room_list()
         refresh_presence_ui()
         render_current_room_messages()
+        update_layout()
 
         page.pubsub.send_all(
             {
@@ -935,14 +993,25 @@ async def main(page: ft.Page):
         ),
     )
 
-    sidebar = ft.Container(
-        width=240,
-        bgcolor="#111827",
-        padding=12,
-        content=ft.Column(
+    sidebar_close_button = ft.IconButton(
+        icon=ft.Icons.CLOSE,
+        icon_color=ft.Colors.WHITE,
+        tooltip="Fechar menu",
+        visible=False,
+        on_click=close_sidebar,
+    )
+
+    def build_sidebar_content():
+        return ft.Column(
             expand=True,
             controls=[
-                ft.Text("Salas", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        ft.Text("Salas", size=20, weight=ft.FontWeight.BOLD, color=ft.Colors.WHITE),
+                        sidebar_close_button,
+                    ],
+                ),
                 ft.Row(
                     controls=[
                         new_room_input,
@@ -956,7 +1025,40 @@ async def main(page: ft.Page):
                 ft.Divider(),
                 room_list,
             ],
-        ),
+        )
+
+    desktop_sidebar = ft.Container(
+        width=240,
+        bgcolor="#111827",
+        padding=12,
+        visible=True,
+        content=build_sidebar_content(),
+    )
+
+    mobile_sidebar = ft.Container(
+        width=260,
+        left=0,
+        top=0,
+        bottom=0,
+        bgcolor="#111827",
+        padding=12,
+        visible=False,
+        content=ft.SafeArea(content=build_sidebar_content()),
+    )
+
+    sidebar_overlay = ft.Container(
+        expand=True,
+        bgcolor="#00000088",
+        visible=False,
+        on_click=close_sidebar,
+    )
+
+    menu_button = ft.IconButton(
+        icon=ft.Icons.MENU,
+        icon_color=ft.Colors.WHITE,
+        tooltip="Abrir menu",
+        visible=False,
+        on_click=open_sidebar,
     )
 
     header = ft.Container(
@@ -967,8 +1069,16 @@ async def main(page: ft.Page):
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     controls=[
-                        room_title,
+                        ft.Row(
+                            spacing=8,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            controls=[
+                                menu_button,
+                                room_title,
+                            ],
+                        ),
                         username_text,
                     ],
                 ),
@@ -1033,12 +1143,21 @@ async def main(page: ft.Page):
         ],
     )
 
-    chat_view = ft.Row(
+    main_content = ft.Row(
         expand=True,
         spacing=0,
         controls=[
-            sidebar,
+            desktop_sidebar,
             chat_area,
+        ],
+    )
+
+    chat_view = ft.Stack(
+        expand=True,
+        controls=[
+            main_content,
+            sidebar_overlay,
+            mobile_sidebar,
         ],
     )
 
@@ -1047,7 +1166,6 @@ async def main(page: ft.Page):
 
 ft.app(
     target=main,
-    view=ft.AppView.WEB_BROWSER,
     assets_dir="assets",
     upload_dir="assets/uploads",
 )
