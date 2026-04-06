@@ -20,6 +20,7 @@ async def main(page: ft.Page):
     room_messages = {"Geral": []}
     unread_counts = {"Geral": 0}
     editing_message_id = None
+    search_query = ""
 
     pending_uploads = {}
     current_picker = None
@@ -99,7 +100,28 @@ async def main(page: ft.Page):
             return ft.Icons.TABLE_CHART
         if lower.endswith((".zip", ".rar", ".7z")):
             return ft.Icons.FOLDER_ZIP
-        return ft.Icons.ATTACH_FILE
+        return ft.Icons.ATTACH_FILE  
+
+    def on_search_change(e):
+        nonlocal search_query
+        search_query = (e.control.value or "").strip().lower()
+        render_current_room_messages()
+
+    def clear_search(e=None):
+        nonlocal search_query
+        search_query = ""
+        search_input.value = ""
+        render_current_room_messages()
+        page.update()
+
+    search_input = ft.TextField(
+        hint_text="Pesquisar mensagens nesta sala...",
+        prefix_icon=ft.Icons.SEARCH,
+        dense=True,
+        filled=True,
+        expand=True,
+        on_change=on_search_change,
+    )
 
     def message_exists(message_id):
         if not message_id:
@@ -486,6 +508,8 @@ async def main(page: ft.Page):
     def render_current_room_messages():
         chat.controls.clear()
 
+        query = search_query.strip().lower()
+
         for message_data in room_messages.get(current_room, []):
             sender = message_data.get("user", "Unknown")
             recipient = message_data.get("recipient")
@@ -494,14 +518,26 @@ async def main(page: ft.Page):
             if private and username not in [sender, recipient]:
                 continue
 
+            if query:
+                text = str(message_data.get("text", "")).lower()
+                file_name = str(message_data.get("file_name", "")).lower()
+                sender_name = str(sender).lower()
+
+                searchable_content = f"{text} {file_name} {sender_name}"
+
+                if query not in searchable_content:
+                    continue
+
             chat.controls.append(create_message(message_data))
 
         page.update()
 
     def change_room(room_name):
-        nonlocal current_room
+        nonlocal current_room, search_query
         current_room = room_name
         unread_counts[room_name] = 0
+        search_query = ""
+        search_input.value = ""
         room_title.value = f"Sala: {current_room}"
         refresh_room_list()
         render_current_room_messages()
@@ -927,7 +963,7 @@ async def main(page: ft.Page):
         padding=ft.padding.symmetric(horizontal=16, vertical=14),
         bgcolor="#1e293b",
         content=ft.Column(
-            spacing=4,
+            spacing=8,
             controls=[
                 ft.Row(
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -937,6 +973,17 @@ async def main(page: ft.Page):
                     ],
                 ),
                 online_users_text,
+                ft.Row(
+                    controls=[
+                        search_input,
+                        ft.IconButton(
+                            icon=ft.Icons.CLOSE,
+                            tooltip="Limpar pesquisa",
+                            icon_color=ft.Colors.WHITE70,
+                            on_click=clear_search,
+                        ),
+                    ],
+                ),
             ],
         ),
     )
