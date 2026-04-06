@@ -65,27 +65,31 @@ def main(page: ft.Page):
         color=ft.Colors.WHITE70,
     )
 
+    def add_online_user(user):
+        if user and user not in online_users:
+            online_users.append(user)
+
     def refresh_recipient_dropdown():
         current_value = recipient_dropdown.value or "Todos"
+        user_values = sorted(set(u for u in online_users if u and u != username))
 
-        options = [ft.dropdown.Option("Todos")]
-        for user in sorted(set(online_users)):
-            if user != username:
-                options.append(ft.dropdown.Option(user))
+        recipient_dropdown.options = [ft.dropdown.Option("Todos")] + [
+            ft.dropdown.Option(user) for user in user_values
+        ]
 
-        recipient_dropdown.options = options
-
-        available_values = [opt.key for opt in recipient_dropdown.options]
-        if current_value in available_values:
-            recipient_dropdown.value = current_value
-        else:
-            recipient_dropdown.value = "Todos"
+        valid_values = ["Todos"] + user_values
+        recipient_dropdown.value = current_value if current_value in valid_values else "Todos"
 
     def refresh_online_users_text():
-        visible_users = [u for u in sorted(set(online_users)) if u]
+        visible_users = sorted(set(u for u in online_users if u))
         online_users_text.value = (
-            "Online: " + ", ".join(visible_users) if visible_users else "Online: -"
+            f"Online: {', '.join(visible_users)}" if visible_users else "Online: -"
         )
+
+    def refresh_presence_ui():
+        refresh_recipient_dropdown()
+        refresh_online_users_text()
+        page.update()
 
     def create_message(
         user,
@@ -115,10 +119,9 @@ def main(page: ft.Page):
 
         privacy_label = ""
         if private:
-            if is_me:
-                privacy_label = f"Privada para {recipient}"
-            else:
-                privacy_label = f"Privada de {user}"
+            privacy_label = (
+                f"Privada para {recipient}" if is_me else f"Privada de {user}"
+            )
 
         return ft.Row(
             alignment=ft.MainAxisAlignment.END if is_me else ft.MainAxisAlignment.START,
@@ -159,7 +162,6 @@ def main(page: ft.Page):
 
         for room in rooms:
             selected = room == current_room
-
             room_button = ft.Container(
                 bgcolor="#2563eb" if selected else "#1e293b",
                 border_radius=10,
@@ -179,8 +181,7 @@ def main(page: ft.Page):
 
     def add_room(e):
         room_name = new_room_input.value.strip()
-
-        if room_name == "":
+        if not room_name:
             return
 
         if room_name not in rooms:
@@ -195,11 +196,29 @@ def main(page: ft.Page):
 
         if msg_type == "presence":
             joined_user = message_data.get("user", "").strip()
-            if joined_user and joined_user not in online_users:
-                online_users.append(joined_user)
-                refresh_recipient_dropdown()
-                refresh_online_users_text()
-                page.update()
+            if joined_user:
+                add_online_user(joined_user)
+
+                # responder ao utilizador novo com a nossa presença
+                if username and joined_user != username:
+                    page.pubsub.send_all(
+                        {
+                            "type": "presence_ack",
+                            "user": username,
+                            "target": joined_user,
+                        }
+                    )
+
+                refresh_presence_ui()
+            return
+
+        if msg_type == "presence_ack":
+            ack_user = message_data.get("user", "").strip()
+            target = message_data.get("target", "").strip()
+
+            if target == username and ack_user:
+                add_online_user(ack_user)
+                refresh_presence_ui()
             return
 
         timestamp = message_data.get("timestamp")
@@ -211,9 +230,8 @@ def main(page: ft.Page):
         if room != current_room:
             return
 
-        if private:
-            if username not in [sender, recipient]:
-                return
+        if private and username not in [sender, recipient]:
+            return
 
         if msg_type == "system":
             chat.controls.append(
@@ -242,7 +260,7 @@ def main(page: ft.Page):
 
     def send_message(e):
         text = message_input.value.strip()
-        if text == "":
+        if not text or not username:
             return
 
         selected_recipient = recipient_dropdown.value or "Todos"
@@ -268,8 +286,7 @@ def main(page: ft.Page):
         nonlocal username
 
         entered_name = name_input.value.strip()
-
-        if entered_name == "":
+        if not entered_name:
             name_input.error_text = "Introduz o teu nome."
             page.update()
             return
@@ -278,18 +295,23 @@ def main(page: ft.Page):
         username = entered_name
         username_text.value = f"Olá, {username}"
 
-        if username not in online_users:
-            online_users.append(username)
-
-        refresh_recipient_dropdown()
-        refresh_online_users_text()
+        add_online_user(username)
 
         page.pubsub.subscribe(on_message)
 
         page.controls.clear()
         page.add(chat_view)
 
-        page.pubsub.send_all({"type": "presence", "user": username})
+        refresh_room_list()
+        refresh_presence_ui()
+
+        # anuncia que entrou
+        page.pubsub.send_all(
+            {
+                "type": "presence",
+                "user": username,
+            }
+        )
 
         page.pubsub.send_all(
             {
@@ -385,9 +407,7 @@ def main(page: ft.Page):
             spacing=10,
             controls=[
                 ft.Row(
-                    controls=[
-                        recipient_dropdown,
-                    ]
+                    controls=[recipient_dropdown]
                 ),
                 ft.Row(
                     vertical_alignment=ft.CrossAxisAlignment.CENTER,
@@ -426,4 +446,4 @@ def main(page: ft.Page):
     page.add(login_view)
 
 
-ft.app(target=main)
+ft.app(target=main, view=ft.AppView.WEB_BROWSER)
