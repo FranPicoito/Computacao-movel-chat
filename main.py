@@ -4,7 +4,7 @@ from datetime import datetime
 
 def main(page: ft.Page):
     page.title = "Chat App"
-    page.window.width = 900
+    page.window.width = 950
     page.window.height = 700
     page.padding = 0
     page.theme_mode = ft.ThemeMode.DARK
@@ -13,6 +13,7 @@ def main(page: ft.Page):
     username = ""
     rooms = ["Geral"]
     current_room = "Geral"
+    online_users = []
 
     chat = ft.ListView(
         expand=True,
@@ -22,6 +23,7 @@ def main(page: ft.Page):
     )
 
     room_list = ft.Column(spacing=8, scroll=ft.ScrollMode.AUTO)
+
     room_title = ft.Text(
         value="Sala: Geral",
         size=18,
@@ -50,7 +52,50 @@ def main(page: ft.Page):
         expand=True,
     )
 
-    def create_message(user, text, room, timestamp=None, system=False):
+    recipient_dropdown = ft.Dropdown(
+        label="Destinatário",
+        value="Todos",
+        width=220,
+        options=[ft.dropdown.Option("Todos")],
+    )
+
+    online_users_text = ft.Text(
+        value="Online: -",
+        size=12,
+        color=ft.Colors.WHITE70,
+    )
+
+    def refresh_recipient_dropdown():
+        current_value = recipient_dropdown.value or "Todos"
+
+        options = [ft.dropdown.Option("Todos")]
+        for user in sorted(set(online_users)):
+            if user != username:
+                options.append(ft.dropdown.Option(user))
+
+        recipient_dropdown.options = options
+
+        available_values = [opt.key for opt in recipient_dropdown.options]
+        if current_value in available_values:
+            recipient_dropdown.value = current_value
+        else:
+            recipient_dropdown.value = "Todos"
+
+    def refresh_online_users_text():
+        visible_users = [u for u in sorted(set(online_users)) if u]
+        online_users_text.value = (
+            "Online: " + ", ".join(visible_users) if visible_users else "Online: -"
+        )
+
+    def create_message(
+        user,
+        text,
+        room,
+        timestamp=None,
+        system=False,
+        private=False,
+        recipient=None,
+    ):
         time_now = timestamp if timestamp else datetime.now().strftime("%H:%M")
 
         if system:
@@ -68,13 +113,20 @@ def main(page: ft.Page):
 
         is_me = user == username
 
+        privacy_label = ""
+        if private:
+            if is_me:
+                privacy_label = f"Privada para {recipient}"
+            else:
+                privacy_label = f"Privada de {user}"
+
         return ft.Row(
             alignment=ft.MainAxisAlignment.END if is_me else ft.MainAxisAlignment.START,
             controls=[
                 ft.Container(
                     padding=12,
                     border_radius=12,
-                    bgcolor="#2563eb" if is_me else "#1e293b",
+                    bgcolor="#7c3aed" if private else ("#2563eb" if is_me else "#1e293b"),
                     content=ft.Column(
                         tight=True,
                         spacing=4,
@@ -88,6 +140,13 @@ def main(page: ft.Page):
                                 text,
                                 size=14,
                                 color=ft.Colors.WHITE,
+                            ),
+                            ft.Text(
+                                privacy_label,
+                                size=10,
+                                italic=True,
+                                color="#e2e8f0",
+                                visible=private,
                             ),
                         ],
                     ),
@@ -110,8 +169,6 @@ def main(page: ft.Page):
             )
             room_list.controls.append(room_button)
 
-        page.update()
-
     def change_room(room_name):
         nonlocal current_room
         current_room = room_name
@@ -131,14 +188,32 @@ def main(page: ft.Page):
 
         new_room_input.value = ""
         refresh_room_list()
+        page.update()
 
     def on_message(message_data: dict):
         msg_type = message_data.get("type")
+
+        if msg_type == "presence":
+            joined_user = message_data.get("user", "").strip()
+            if joined_user and joined_user not in online_users:
+                online_users.append(joined_user)
+                refresh_recipient_dropdown()
+                refresh_online_users_text()
+                page.update()
+            return
+
         timestamp = message_data.get("timestamp")
         room = message_data.get("room", "Geral")
+        private = message_data.get("private", False)
+        sender = message_data.get("user", "Unknown")
+        recipient = message_data.get("recipient")
 
         if room != current_room:
             return
+
+        if private:
+            if username not in [sender, recipient]:
+                return
 
         if msg_type == "system":
             chat.controls.append(
@@ -153,27 +228,35 @@ def main(page: ft.Page):
         elif msg_type == "chat":
             chat.controls.append(
                 create_message(
-                    user=message_data.get("user", "Unknown"),
+                    user=sender,
                     text=message_data.get("text", ""),
                     room=room,
                     timestamp=timestamp,
                     system=False,
+                    private=private,
+                    recipient=recipient,
                 )
             )
 
         page.update()
 
     def send_message(e):
-        if message_input.value.strip() == "":
+        text = message_input.value.strip()
+        if text == "":
             return
+
+        selected_recipient = recipient_dropdown.value or "Todos"
+        is_private = selected_recipient != "Todos"
 
         page.pubsub.send_all(
             {
                 "type": "chat",
                 "user": username,
-                "text": message_input.value.strip(),
+                "text": text,
                 "room": current_room,
                 "timestamp": datetime.now().strftime("%H:%M"),
+                "private": is_private,
+                "recipient": selected_recipient if is_private else None,
             }
         )
 
@@ -195,12 +278,18 @@ def main(page: ft.Page):
         username = entered_name
         username_text.value = f"Olá, {username}"
 
+        if username not in online_users:
+            online_users.append(username)
+
+        refresh_recipient_dropdown()
+        refresh_online_users_text()
+
         page.pubsub.subscribe(on_message)
 
         page.controls.clear()
         page.add(chat_view)
 
-        refresh_room_list()
+        page.pubsub.send_all({"type": "presence", "user": username})
 
         page.pubsub.send_all(
             {
@@ -249,7 +338,7 @@ def main(page: ft.Page):
     )
 
     sidebar = ft.Container(
-        width=220,
+        width=240,
         bgcolor="#111827",
         padding=12,
         content=ft.Column(
@@ -274,11 +363,17 @@ def main(page: ft.Page):
     header = ft.Container(
         padding=ft.padding.symmetric(horizontal=16, vertical=14),
         bgcolor="#1e293b",
-        content=ft.Row(
-            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+        content=ft.Column(
+            spacing=4,
             controls=[
-                room_title,
-                username_text,
+                ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    controls=[
+                        room_title,
+                        username_text,
+                    ],
+                ),
+                online_users_text,
             ],
         ),
     )
@@ -286,14 +381,24 @@ def main(page: ft.Page):
     input_bar = ft.Container(
         padding=ft.padding.all(12),
         bgcolor="#1e293b",
-        content=ft.Row(
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        content=ft.Column(
+            spacing=10,
             controls=[
-                message_input,
-                ft.IconButton(
-                    icon=ft.Icons.SEND,
-                    icon_color=ft.Colors.BLUE_200,
-                    on_click=send_message,
+                ft.Row(
+                    controls=[
+                        recipient_dropdown,
+                    ]
+                ),
+                ft.Row(
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        message_input,
+                        ft.IconButton(
+                            icon=ft.Icons.SEND,
+                            icon_color=ft.Colors.BLUE_200,
+                            on_click=send_message,
+                        ),
+                    ],
                 ),
             ],
         ),
