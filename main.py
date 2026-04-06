@@ -18,6 +18,7 @@ async def main(page: ft.Page):
     current_room = "Geral"
     online_users = []
     room_messages = {"Geral": []}
+    unread_counts = {"Geral": 0}
     editing_message_id = None
 
     pending_uploads = {}
@@ -449,15 +450,37 @@ async def main(page: ft.Page):
 
     def refresh_room_list():
         room_list.controls.clear()
+
         for room in rooms:
             selected = room == current_room
+            unread = unread_counts.get(room, 0)
+
             room_button = ft.Container(
                 bgcolor="#2563eb" if selected else "#1e293b",
                 border_radius=10,
                 padding=10,
-                content=ft.Text(room, color=ft.Colors.WHITE),
                 on_click=lambda e, r=room: change_room(r),
+                content=ft.Row(
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    controls=[
+                        ft.Text(room, color=ft.Colors.WHITE, expand=True),
+                        ft.Container(
+                            visible=unread > 0,
+                            bgcolor="#ef4444",
+                            border_radius=999,
+                            padding=ft.padding.symmetric(horizontal=8, vertical=2),
+                            content=ft.Text(
+                                str(unread),
+                                color=ft.Colors.WHITE,
+                                size=11,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                        ),
+                    ],
+                ),
             )
+
             room_list.controls.append(room_button)
 
     def render_current_room_messages():
@@ -478,6 +501,7 @@ async def main(page: ft.Page):
     def change_room(room_name):
         nonlocal current_room
         current_room = room_name
+        unread_counts[room_name] = 0
         room_title.value = f"Sala: {current_room}"
         refresh_room_list()
         render_current_room_messages()
@@ -493,6 +517,9 @@ async def main(page: ft.Page):
 
         if room_name not in room_messages:
             room_messages[room_name] = []
+
+        if room_name not in unread_counts:
+            unread_counts[room_name] = 0
 
         refresh_room_list()
         page.update()
@@ -524,6 +551,9 @@ async def main(page: ft.Page):
 
             if room_name and room_name not in room_messages:
                 room_messages[room_name] = []
+
+            if room_name and room_name not in unread_counts:
+                unread_counts[room_name] = 0
 
             refresh_room_list()
             page.update()
@@ -601,12 +631,18 @@ async def main(page: ft.Page):
             if room not in room_messages:
                 room_messages[room] = []
 
+            if room not in unread_counts:
+                unread_counts[room] = 0
+
             room_messages[room].append(message_data)
 
-            if room != current_room:
+            if private and username not in [sender, recipient]:
                 return
 
-            if private and username not in [sender, recipient]:
+            if room != current_room:
+                unread_counts[room] += 1
+                refresh_room_list()
+                page.update()
                 return
 
             chat.controls.append(create_message(message_data))
